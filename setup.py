@@ -1,21 +1,38 @@
 from setuptools import setup, Extension
+import os
 import pybind11
 
-cpp_args = ['-std=c++11']
-
-ext_modules = [
-    Extension(
-        'myenv_cpp',
-        ['env.cpp', 'nnue/nnue.cpp', 'nnue/misc.cpp'],
-        include_dirs=[pybind11.get_include()],
-        language='c++',
-        extra_compile_args=cpp_args,
-    ),
+# Define the path to the C++ source files
+sources = [
+    'gym_chessengine/env.cpp',
+    'gym_chessengine/nnue/misc.cpp',
+    'gym_chessengine/nnue/nnue.cpp',
 ]
 
+# Define the extension module
+env_extension = Extension(
+    'gym_chessengine.env',
+    sources=sources,
+    include_dirs=['gym_chessengine', 'gym_chessengine/nnue', pybind11.get_include()],
+    language='c++', # Specify C++ language
+    extra_compile_args=['-std=c++17'], # Use C++17 standard
+)
+
 setup(
-    name='myenv_cpp',
+    name='gym_chessengine',
     version='1.0',
-    description='Python wrapper for C++ chess environment',
-    ext_modules=ext_modules,
+    description='A fast C++ chess engine, wrapped in a Gym Environment.',
+    author='Hadrien Crassous',
+    author_email='crassous.hadrien@gmail.com',
+    packages=['gym_chessengine'],
+    ext_modules=[env_extension],
+    install_requires=[
+        'pybind11>=2.10',
+        'gymnasium>=1.2.0',
+    ],
+    # Include the .nnue file as package data
+    package_data={
+        'gym_chessengine': ['nn-eba324f53044.nnue'],
+    },
+    include_package_data=True,
 )

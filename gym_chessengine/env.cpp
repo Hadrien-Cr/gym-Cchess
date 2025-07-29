@@ -5,19 +5,20 @@
 
 namespace py = pybind11;
 
-class MyEnv {
+class PyChessBoard {
 public:
-    MyEnv() : board(start_position) {}
+    PyChessBoard() : board(start_position) {}
 
     void reset(std::string fen) {
         char* fen_char = new char[fen.length() + 1];
         strcpy(fen_char, fen.c_str());
         board.parse_fen(fen_char);
         delete[] fen_char;
-    }
+    } 
 
     std::tuple<py::array_t<double>, double, bool> step(int move) {
-        if (board.apply_move(move, 0) == 0) {
+        UndoInfo undo;
+        if (board.apply_move(move, 0, &undo) == 0) {
             // Invalid move
             return std::make_tuple(get_observation(), -1.0, true);
         }
@@ -32,11 +33,12 @@ public:
         return std::make_tuple(get_observation(), 0.0, false);
     }
 
-    int environment_move() {
-        board.search_position(1); // Search for 1 second
-        int best_move = board.pv_table[0][0];
-        board.apply_move(best_move, 0);
-        return best_move;
+    int environment_move(int depth) {
+        board.search_position(depth);
+        int move = board.pv_table[0][0];
+        int start_square = decode_move_source(move);
+        int end_square = decode_move_target(move);
+        return start_square * 64 + end_square;
     }
 
     py::array_t<double> get_observation() {
@@ -68,12 +70,12 @@ private:
     ChessBoard board;
 };
 
-PYBIND11_MODULE(myenv_cpp, m) {
-    py::class_<MyEnv>(m, "MyEnv")
+PYBIND11_MODULE(env, m) {
+    py::class_<PyChessBoard>(m, "PyChessBoard")
         .def(py::init<>())
-        .def("reset", &MyEnv::reset)
-        .def("step", &MyEnv::step)
-        .def("environment_move", &MyEnv::environment_move)
-        .def("get_observation", &MyEnv::get_observation)
-        .def("print_board", &MyEnv::print_board);
+        .def("reset", &PyChessBoard::reset)
+        .def("step", &PyChessBoard::step)
+        .def("environment_move", &PyChessBoard::environment_move)
+        .def("get_observation", &PyChessBoard::get_observation)
+        .def("print_board", &PyChessBoard::print_board);
 }

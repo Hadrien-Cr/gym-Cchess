@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include "./nnue/nnue.h"
+#include <cassert>  // Required for assert
 
 #define U64 unsigned long long
 #define get_bit(bitboard, square) ((bitboard) & (1ULL << square))
@@ -32,7 +33,7 @@
 #define MATE_SCORE 48000
 #define FULL_DEPTH_MOVES 4
 #define REDUCTION_LIMIT 3
-#define start_position "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 "
+#define start_position "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 enum squares {
     a8, b8, c8, d8, e8, f8, g8, h8,
@@ -52,6 +53,17 @@ typedef struct {
     int moves[256];
     int move_count;
 } move_list;
+
+typedef struct {
+    int move;
+    int source_piece;
+    int captured_piece;
+    int en_passant_square;
+    int castling_rights;
+    int fifty;
+    U64 hash_key;
+} UndoInfo;
+
 
 char *unicode_pieces[12] = {(char*)"♟︎", (char*)"♞", (char*)"♝", (char*)"♜", (char*)"♛", (char*)"♚", (char*)"♙", (char*)"♘", (char*)"♗", (char*)"♖", (char*)"♕", (char*)"♔"};
 
@@ -173,6 +185,25 @@ static int mvv_lva[12][12] = {
     101, 201, 301, 401, 501, 601,  101, 201, 301, 401, 501, 601,
     100, 200, 300, 400, 500, 600,  100, 200, 300, 400, 500, 600
 };
+
+void print_move(int move) {
+    if (decode_move_promotion(move))
+        printf("%s%s%c", square_names[decode_move_source(move)],square_names[decode_move_target(move)],get_promoted_piece_char(decode_move_promotion(move)));
+    else
+        printf("%s%s", square_names[decode_move_source(move)], square_names[decode_move_target(move)]);
+}
+
+void print_undo_info(UndoInfo *undo) {
+    std::cout << "move: " << std::endl;
+    print_move(undo->move);
+    std::cout << "captured piece: " << undo->captured_piece << std::endl;
+    std::cout << "en passant square: " << undo->en_passant_square << std::endl;
+    std::cout << "castling rights: " << undo->castling_rights << std::endl;
+    std::cout << "fifty: " << undo->fifty << std::endl;
+    std::cout << "hash key: " << undo->hash_key << std::endl;
+}
+
+
 
 class ChessBoard {
 public:
@@ -314,6 +345,29 @@ public:
         printf("     Hash key:  %llx\n\n", hash_key);
     }
 
+
+    int parse_move(char *move_string){
+        move_list move_list[1];
+        generate_moves(move_list);
+
+        int source_square = (move_string[0] - 'a') + (8 - (move_string[1] - '0')) * 8;
+        int target_square = (move_string[2] - 'a') + (8 - (move_string[3] - '0')) * 8;
+
+        for (int move_count = 0; move_count < move_list->move_count; move_count++){
+            int move = move_list->moves[move_count];
+
+            if (source_square == decode_move_source(move) && target_square == decode_move_target(move)){
+                int promoted_piece = decode_move_promotion(move);
+                
+                if ((~ promoted_piece) | (get_promoted_piece_char(promoted_piece) ==  move_string[4])){
+                    return move;
+                }
+            }
+        }
+        
+        return 0;
+    }
+
     void search_position(int depth){
         int score = 0;
         nodes = 0;
@@ -353,6 +407,36 @@ public:
         printf("\n");
     }
 
+    int piece_sum() {
+        int sum = 0;
+        for (int i = P; i <= k; i++) {
+            sum += count_bits(piece_bitboards[i]);
+        }
+        return sum;
+    }
+
+    uint64_t perft(int depth) {
+        if (depth == 0) {
+            return 1; // Leaf node reached
+        }
+
+        uint64_t nodes = 0;
+        move_list moves;
+        generate_moves(&moves);
+
+        for (int i = 0; i < moves.move_count; i++) {
+            UndoInfo undo;
+
+            if (!apply_move(moves.moves[i], 0, &undo))
+                continue;
+
+            nodes += perft(depth - 1);
+
+            undo_move(undo);
+        }
+
+        return nodes;
+    }
     void print_move_uci(int move, char* move_string) {
         if (decode_move_promotion(move)) {
             sprintf(move_string, "%s%s%c", square_names[decode_move_source(move)], square_names[decode_move_target(move)], get_promoted_piece_char(decode_move_promotion(move)));
@@ -417,14 +501,14 @@ public:
             // White king castles
             if (side_to_move == white && piece == K){
                 if (castling_rights & wk){
-                    if (!get_bit(block_bitboards[2], f1) && !get_bit(block_bitboards[2], g1) && !is_square_attacked(f1, black)){
+                    if (!get_bit(block_bitboards[2], f1) && !get_bit(block_bitboards[2], g1) && !is_square_attacked(e1, black) && !is_square_attacked(f1, black)){
                         source_square = e1;
                         target_square = g1;
                         add_move(moves_list, encode_move(source_square, target_square, piece, 0, 0, 0, 0, 1)); 
                     }
                 }
                 if (castling_rights & wq){
-                    if (!get_bit(block_bitboards[2], d1) && !get_bit(block_bitboards[2], c1) && !get_bit(block_bitboards[2], b1) && !is_square_attacked(d1, black)){
+                    if (!get_bit(block_bitboards[2], d1) && !get_bit(block_bitboards[2], c1) && !get_bit(block_bitboards[2], b1) && !is_square_attacked(e1, black) && !is_square_attacked(d1, black)){
                         source_square = e1;
                         target_square = c1;
                         add_move(moves_list, encode_move(source_square, target_square, piece, 0, 0, 0, 0, 1)); 
@@ -480,14 +564,14 @@ public:
             // Black king castles
             if (side_to_move == black && piece == k){
                 if (castling_rights & bk){
-                    if (!get_bit(block_bitboards[2], f8) && !get_bit(block_bitboards[2], g8) && !is_square_attacked(f8, white)){
+                    if (!get_bit(block_bitboards[2], f8) && !get_bit(block_bitboards[2], g8) && !is_square_attacked(e8, black) && !is_square_attacked(f8, white)){
                         source_square = e8;
                         target_square = g8;
                         add_move(moves_list, encode_move(source_square, target_square, piece, 0, 0, 0, 0, 1)); 
                     }
                 }
                 if (castling_rights & bq){
-                    if (!get_bit(block_bitboards[2], d8) && !get_bit(block_bitboards[2], c8) && !get_bit(block_bitboards[2], b8) && !is_square_attacked(d8, white)){
+                    if (!get_bit(block_bitboards[2], d8) && !get_bit(block_bitboards[2], c8) && !get_bit(block_bitboards[2], b8)&& !is_square_attacked(e8, black) && !is_square_attacked(d8, white)){
                         source_square = e8;
                         target_square = c8;
                         add_move(moves_list, encode_move(source_square, target_square, piece, 0, 0, 0, 0, 1)); 
@@ -588,25 +672,124 @@ public:
         }
     }
 
-    int apply_move(int move, int only_capture_flag) {
-        if (!only_capture_flag){
-            copy_board();
+    void undo_move(UndoInfo info) {
+        int move      = info.move;
+        int source    = decode_move_source(move);
+        int target    = decode_move_target(move);
+        int piece     = decode_move_piece(move);
+        int promotion = decode_move_promotion(move);
+        int capture   = decode_move_capture(move);
+        int en_passant = decode_move_en_passant(move);
+        int castling   = decode_move_castling(move);
+        int pawn       = (side_to_move == white ? P : p);
 
-            int source = decode_move_source(move);
-            int target = decode_move_target(move);
+        side_to_move ^= 1;
+        hash_key = info.hash_key;
+        en_passant_square = info.en_passant_square;
+        castling_rights = info.castling_rights;
+        fifty = info.fifty;
+        
+
+        // Undo piece move
+        if (promotion) {
+            if (!get_bit(piece_bitboards[promotion], target)) {
+                print_board();
+                print_move(move);
+                std::cout << "No piece at target square" << std::endl;
+                exit(1);
+            }
+            pop_bit(piece_bitboards[promotion], target);
+            set_bit(piece_bitboards[(side_to_move == white ? P : p)], source);
+        } 
+        else {
+            if (!get_bit(piece_bitboards[piece], target)) {
+                print_board();
+                print_move(move);
+                std::cout << "No piece at target square" << std::endl;
+                exit(1);
+            }
+            pop_bit(piece_bitboards[piece], target);
+            set_bit(piece_bitboards[piece], source);
+        }
+
+        // Restore captured piece
+        if (capture) {
+            if (en_passant) {
+                int sq = (side_to_move == white) ? target + 8 : target - 8;
+                set_bit(piece_bitboards[(side_to_move == white) ? p : P], sq);
+            } else {
+                set_bit(piece_bitboards[info.captured_piece], target);
+            }
+        }
+
+        // Undo castling
+        if (castling) {
+            if (side_to_move == white) {
+                if (target == c1) {
+                    pop_bit(piece_bitboards[R], d1);
+                    set_bit(piece_bitboards[R], a1);
+                } else {
+                    pop_bit(piece_bitboards[R], f1);
+                    set_bit(piece_bitboards[R], h1);
+                }
+            } else {
+                if (target == c8) {
+                    pop_bit(piece_bitboards[r], d8);
+                    set_bit(piece_bitboards[r], a8);
+                } else {
+                    pop_bit(piece_bitboards[r], f8);
+                    set_bit(piece_bitboards[r], h8);
+                }
+            }
+        }
+        
+        memset(block_bitboards, 0ULL, 24);
+        for (int i = P; i <= K; i++) block_bitboards[white] |= piece_bitboards[i];
+        for (int i = p; i <= k; i++) block_bitboards[black] |= piece_bitboards[i];
+        block_bitboards[2] = block_bitboards[white] | block_bitboards[black];
+    }
+
+    int apply_move(int move, int only_capture_flag, UndoInfo* undo) {
+        if (!only_capture_flag){ 
+            int source_square = decode_move_source(move);
+            int target_square = decode_move_target(move);
             int piece = decode_move_piece(move);
-            int promotion = decode_move_promotion(move);
+            int promoted_piece = decode_move_promotion(move);
             int capture = decode_move_capture(move);
-            int double_move = decode_move_double(move);
+            int double_push = decode_move_double(move);
             int en_passant = decode_move_en_passant(move);
             int castling = decode_move_castling(move);
 
-            pop_bit(piece_bitboards[piece], source);
-            set_bit(piece_bitboards[piece], target);
+            // Save undo info
+            undo->move              = move;
+            undo->fifty             = fifty;
+            undo->castling_rights   = castling_rights;
+            undo->en_passant_square = en_passant_square;
+            undo->hash_key          = hash_key;
+            undo->captured_piece    = -1;
+            
+            if (capture) {
+                int captured_square = en_passant
+                    ? (side_to_move == white ? target_square + 8 : target_square - 8)
+                    : target_square;
 
-            hash_key ^= piece_keys[piece][source];
-            hash_key ^= piece_keys[piece][target];
+                int start = (side_to_move == white ? p : P);
+                int end   = (side_to_move == white ? k : K);
 
+                for (int i = start; i <= end; i++) {
+                    if (get_bit(piece_bitboards[i], captured_square)) {
+                        undo->captured_piece = i;
+                        break;
+                    }
+                }
+            }
+
+            // move piece
+            pop_bit(piece_bitboards[piece], source_square);
+            set_bit(piece_bitboards[piece], target_square);
+            hash_key ^= piece_keys[piece][source_square]; // remove piece from source square in hash key
+            hash_key ^= piece_keys[piece][target_square]; // set piece to the target square in hash key
+            
             fifty++;
             
             if (piece == P || piece == p)
@@ -614,107 +797,149 @@ public:
             
             if (capture) {
                 fifty = 0;
-                int start_piece = (side_to_move == white ? p : P);
-                int end_piece = (side_to_move == white ? k : K);
-                for (int piece_idx = start_piece; piece_idx <= end_piece; piece_idx++) {
-                    if (get_bit(piece_bitboards[piece_idx], target)) {
-                        pop_bit(piece_bitboards[piece_idx], target);
-                        hash_key ^= piece_keys[piece_idx][target];
+
+                int start = (side_to_move == white ? p : P);
+                int end   = (side_to_move == white ? k : K);
+                
+                for (int bb_piece = start; bb_piece <= end; bb_piece++){
+                    if (get_bit(piece_bitboards[bb_piece], target_square)){
+                        pop_bit(piece_bitboards[bb_piece], target_square);
+                        hash_key ^= piece_keys[bb_piece][target_square];
                         break;
                     }
                 }
             }
             
-            if (promotion) {
-                pop_bit(piece_bitboards[(side_to_move == white) ? P : p], target);
-                hash_key ^= piece_keys[(side_to_move == white) ? P : p][target];
-                set_bit(piece_bitboards[promotion], target);
-                hash_key ^= piece_keys[promotion][target];
-            }
-
-            if (en_passant) {
-                if (side_to_move == white) {
-                    pop_bit(piece_bitboards[p], target + 8);
-                    hash_key ^= piece_keys[p][target + 8];
+            if (promoted_piece) {
+                // white to move
+                if (side_to_move == white)
+                {
+                    // erase the pawn from the target square
+                    pop_bit(piece_bitboards[P], target_square);
+                    
+                    // remove pawn from hash key
+                    hash_key ^= piece_keys[P][target_square];
                 }
+                
+                // black to move
                 else {
-                    pop_bit(piece_bitboards[P], target - 8);
-                    hash_key ^= piece_keys[P][target - 8];
+                    pop_bit(piece_bitboards[p], target_square);
+                    
+                    hash_key ^= piece_keys[p][target_square];
                 }
-            }
-
-            if (en_passant_square != -1){
-                hash_key ^= enpassant_keys[en_passant_square];
-            }
-
-            en_passant_square = -1;
-            if (double_move) {
-                en_passant_square = target - 8 * (2 * side_to_move - 1);
-                hash_key ^= enpassant_keys[en_passant_square];
+                
+                set_bit(piece_bitboards[promoted_piece], target_square);
+                
+                hash_key ^= piece_keys[promoted_piece][target_square];
             }
             
-            if (castling) {
-                if (is_square_attacked(source, 1 - side_to_move)) {
-                    take_back();
-                    return 0;
-                }
+            if (en_passant) {
+                (side_to_move == white) ? pop_bit(piece_bitboards[p], target_square + 8) :
+                                pop_bit(piece_bitboards[P], target_square - 8);
+                                
                 if (side_to_move == white) {
-                    if (target == c1) {
-                        pop_bit(piece_bitboards[R], a1);
-                        set_bit(piece_bitboards[R], d1);
-                        hash_key ^= piece_keys[R][a1];
-                        hash_key ^= piece_keys[R][d1];
-                    }
-                    else {
-                        pop_bit(piece_bitboards[R], h1);
-                        set_bit(piece_bitboards[R], f1);
-                        hash_key ^= piece_keys[R][h1];
-                        hash_key ^= piece_keys[R][f1];
-                    }
+                    pop_bit(piece_bitboards[p], target_square + 8);
+                    hash_key ^= piece_keys[p][target_square + 8];
                 }
-                if (side_to_move == black) {
-                    if (target == c8) {
-                        pop_bit(piece_bitboards[r], a8);
-                        set_bit(piece_bitboards[r], d8);
-                        hash_key ^= piece_keys[R][a8];
-                        hash_key ^= piece_keys[R][d8];
-                    }
-                    else {
-                        pop_bit(piece_bitboards[r], h8);
-                        set_bit(piece_bitboards[r], f8);
-                        hash_key ^= piece_keys[R][h8];
-                        hash_key ^= piece_keys[R][f8];
-                    }
+                
+                else {
+                    pop_bit(piece_bitboards[P], target_square - 8);
+                    hash_key ^= piece_keys[P][target_square - 8];
                 }
             }
-
+            
+            if (en_passant_square != -1) hash_key ^= enpassant_keys[en_passant];
+            
+            en_passant_square = -1;
+            
+            if (double_push) {
+                if (side_to_move == white) {
+                    en_passant_square = target_square + 8;
+                    hash_key ^= enpassant_keys[target_square + 8];
+                }
+                
+                else {
+                    en_passant_square = target_square - 8;
+                    hash_key ^= enpassant_keys[target_square - 8];
+                }
+            }
+            
+            if (castling){
+                switch (target_square){
+                    case (g1):
+                        // move H rook
+                        pop_bit(piece_bitboards[R], h1);
+                        set_bit(piece_bitboards[R], f1);
+                        
+                        // hash rook
+                        hash_key ^= piece_keys[R][h1];  // remove rook from h1 from hash key
+                        hash_key ^= piece_keys[R][f1];  // put rook on f1 into a hash key
+                        break;
+                    
+                    // white castles queen side
+                    case (c1):
+                        // move A rook
+                        pop_bit(piece_bitboards[R], a1);
+                        set_bit(piece_bitboards[R], d1);
+                        
+                        // hash rook
+                        hash_key ^= piece_keys[R][a1];  // remove rook from a1 from hash key
+                        hash_key ^= piece_keys[R][d1];  // put rook on d1 into a hash key
+                        break;
+                    
+                    // black castles king side
+                    case (g8):
+                        // move H rook
+                        pop_bit(piece_bitboards[r], h8);
+                        set_bit(piece_bitboards[r], f8);
+                        
+                        // hash rook
+                        hash_key ^= piece_keys[r][h8];  // remove rook from h8 from hash key
+                        hash_key ^= piece_keys[r][f8];  // put rook on f8 into a hash key
+                        break;
+                    
+                    // black castles queen side
+                    case (c8):
+                        pop_bit(piece_bitboards[r], a8);
+                        set_bit(piece_bitboards[r], d8);
+                        hash_key ^= piece_keys[r][a8];  // remove rook from a8 from hash key
+                        hash_key ^= piece_keys[r][d8];  // put rook on d8 into a hash key
+                        break;
+                }
+            }
+            
             hash_key ^= castle_keys[castling_rights];
-            castling_rights &= castling_rights_sq[source];
-            castling_rights &= castling_rights_sq[target];
+            castling_rights &= castling_rights_sq[source_square];
+            castling_rights &= castling_rights_sq[target_square];
             hash_key ^= castle_keys[castling_rights];
-
+            
             memset(block_bitboards, 0ULL, 24);
+            
+            for (int bb_piece = P; bb_piece <= K; bb_piece++)
+                block_bitboards[white] |= piece_bitboards[bb_piece];
 
-            for (int i = P; i <= K; i++) {block_bitboards[white] |= piece_bitboards[i];}
-            for (int i = p; i <= k; i++) {block_bitboards[black] |= piece_bitboards[i];}
+            for (int bb_piece = p; bb_piece <= k; bb_piece++)
+                block_bitboards[black] |= piece_bitboards[bb_piece];
+
             
             block_bitboards[2] |= block_bitboards[white];
             block_bitboards[2] |= block_bitboards[black];
             
             side_to_move ^= 1;
+            
             hash_key ^= side_key;
 
-            int king_position = (side_to_move == black ? get_lsb_index(piece_bitboards[K]) : get_lsb_index(piece_bitboards[k]));
-            if (is_square_attacked(king_position, side_to_move)) {
-                take_back();
+            if (is_square_attacked((side_to_move == white) ? get_lsb_index(piece_bitboards[k]) : get_lsb_index(piece_bitboards[K]), side_to_move)) {
+                undo_move(*undo);
                 return 0;
             }
-            U64 hash_from_scratch = generate_hash_key();
-            return 1;
+            else
+                return 1;
         }
+
         else {
             if (decode_move_capture(move))
-                return apply_move(move, 0);
+                return apply_move(move, 0, undo);
             else
                 return 0;
         }
@@ -751,30 +976,6 @@ private:
     } TT;
 
     TT hash_table[hash_size];
-
-    U64 piece_bitboards_cp[12], block_bitboards_cp[3];
-    int side_to_move_cp, en_passant_square_cp, castling_rights_cp, fifty_cp;
-    U64 hash_key_cp;
-
-    void copy_board() {
-        memcpy(piece_bitboards_cp, piece_bitboards, 96);
-        memcpy(block_bitboards_cp, block_bitboards, 24);
-        side_to_move_cp = side_to_move;
-        en_passant_square_cp = en_passant_square;
-        castling_rights_cp = castling_rights;
-        fifty_cp = fifty;
-        hash_key_cp = hash_key;
-    }
-
-    void take_back() {
-        memcpy(piece_bitboards, piece_bitboards_cp, 96);
-        memcpy(block_bitboards, block_bitboards_cp, 24);
-        side_to_move = side_to_move_cp;
-        en_passant_square = en_passant_square_cp;
-        castling_rights = castling_rights_cp;
-        fifty = fifty_cp;
-        hash_key = hash_key_cp;
-    }
 
     int count_bits(U64 bitboard) {
         int count = 0;
@@ -1047,7 +1248,7 @@ private:
                 rook_attacks[square][magic_index] = rook_attacks_otf(square, block);
             }
         }
-        init_nnue((char*)"nn-eba324f53044.nnue");
+        init_nnue("gym_chessengine/nn-eba324f53044.nnue");
     }
 
     void init_nnue(char *filename){
@@ -1107,16 +1308,15 @@ private:
         return nnue_evaluate_fen(fen);
     }
 
-    int evaluate() {    
+    int evaluate() {
         U64 bitboard;
         int piece, square;
         int pieces[33];
         int squares[33];
         int index = 2;
-        
+
         for (int bb_piece = P; bb_piece <= k; bb_piece++) {
             bitboard = piece_bitboards[bb_piece];
-            
             while (bitboard) {
                 piece = bb_piece;
                 
@@ -1264,205 +1464,203 @@ private:
         return 0;
     }
 
-    int quiescence(int alpha, int beta){
+    int quiescence(int alpha, int beta) {
         nodes++;
 
         if (ply > MAX_VAL - 1)
             return evaluate();
 
         int evaluation = evaluate();
-        
-        if (evaluation >= beta){
+        if (evaluation >= beta)
             return beta;
-        }
-        
-        if (evaluation > alpha){
+
+        if (evaluation > alpha)
             alpha = evaluation;
-        }
-        
+
         move_list move_list[1];
         generate_moves(move_list);
         sort_moves(move_list);
-        
-        for (int count = 0; count < move_list->move_count; count++){
-            copy_board();
+
+        for (int count = 0; count < move_list->move_count; count++) {
+            int move = move_list->moves[count];
+            if (!decode_move_capture(move)) continue;  // Only explore captures in quiescence
+
+            UndoInfo undo;
+
             ply++;
             repetition_index++;
             repetition_table[repetition_index] = hash_key;
 
-            
-            if (apply_move(move_list->moves[count], 1) == 0){
+            if (!apply_move(move, 1, &undo)) {
                 ply--;
                 repetition_index--;
                 continue;
             }
 
             int score = -quiescence(-beta, -alpha);
-            
+
+            undo_move(undo);
             ply--;
-            
             repetition_index--;
 
-            take_back();
-            
-            
-            if (score > alpha){
+            if (score > alpha) {
                 alpha = score;
-                
-                if (score >= beta){
+
+                if (score >= beta)
                     return beta;
-                }
             }
         }
-        
+
         return alpha;
     }
 
-    int negamax(int depth, int alpha, int beta){
+    int negamax(int depth, int alpha, int beta) {
         int score;
         int hash_flag = hash_flag_alpha;
-        
-        if (ply && is_repetition() || fifty >= 100)
+
+        if ((ply && is_repetition()) || fifty >= 100)
             return 0;
-        
-        int pv_node = beta - alpha > 1;
-        
-        if (ply && (score = read_tt_entry(alpha, beta, depth)) != no_hash_entry && pv_node == 0)
+
+        int pv_node = (beta - alpha > 1);
+
+        if (ply && (score = read_tt_entry(alpha, beta, depth)) != no_hash_entry && !pv_node)
             return score;
 
         pv_length[ply] = ply;
 
         if (depth == 0)
             return quiescence(alpha, beta);
-
-        if (ply > MAX_PLY- 1)
+            // return evaluate();
+        if (ply > MAX_PLY - 1)
             return evaluate();
 
         nodes++;
 
-        int is_in_check = is_square_attacked((side_to_move == white) ? get_lsb_index(piece_bitboards[K]) : get_lsb_index(piece_bitboards[k]), side_to_move ^ 1);
-        if (is_in_check) depth++;
+        int king_sq = (side_to_move == white) ? get_lsb_index(piece_bitboards[K]) : get_lsb_index(piece_bitboards[k]);
+        int is_in_check = is_square_attacked(king_sq, side_to_move ^ 1);
+        if (is_in_check)
+            depth++;
 
         int legal_moves_found = 0;
 
-        if (depth >= 3 && is_in_check == 0 && !(ply == 0)){
-            copy_board();
+        // Null move pruning
+        if (depth >= 3 && !is_in_check && ply != 0) {
+            UndoInfo undo;
+
             ply++;
             repetition_index++;
             repetition_table[repetition_index] = hash_key;
 
-            if (en_passant_square != -1) hash_key ^= enpassant_keys[en_passant_square];
+            // Null move
+            if (en_passant_square != -1)
+                hash_key ^= enpassant_keys[en_passant_square];
+            undo.en_passant_square = en_passant_square;
             en_passant_square = -1;
+
             side_to_move ^= 1;
             hash_key ^= side_key;
-            
+
             score = -negamax(depth - 1 - 2, -beta, -beta + 1);
-            
+
+            side_to_move ^= 1;
+            hash_key ^= side_key;
+            en_passant_square = undo.en_passant_square;
+
             ply--;
             repetition_index--;
-            take_back();
-            
+
             if (score >= beta)
                 return beta;
         }
-        
+
         move_list list[1];
         generate_moves(list);
-        
-        if (follow_pv) enable_pv_scoring(list);
-        
+
+        if (follow_pv)
+            enable_pv_scoring(list);
+
         sort_moves(list);
 
         int moves_searched = 0;
 
-        for (int count = 0; count < list->move_count; count++){
+        for (int count = 0; count < list->move_count; count++) {
             int move = list->moves[count];
-            copy_board();
-            ply++;
+            UndoInfo undo;
 
+            ply++;
             repetition_index++;
             repetition_table[repetition_index] = hash_key;
 
-            if (!apply_move(move, 0)){
+            if (!apply_move(move, 0, &undo)) {
                 ply--;
                 repetition_index--;
                 continue;
             }
-            
 
             legal_moves_found++;
 
-            if (moves_searched == 0){
+            // Principal variation
+            if (moves_searched == 0) {
                 score = -negamax(depth - 1, -beta, -alpha);
-            }
-            else {
-                if(
+            } else {
+                // Late move reductions
+                if (
                     moves_searched >= FULL_DEPTH_MOVES &&
                     depth >= REDUCTION_LIMIT &&
-                    is_in_check == 0 && 
-                    decode_move_capture(move) == 0 &&
-                    decode_move_promotion(move)  == 0
-                    )
+                    !is_in_check &&
+                    !decode_move_capture(move) &&
+                    !decode_move_promotion(move)
+                ) {
                     score = -negamax(depth - 2, -alpha - 1, -alpha);
-                
-                else score = alpha + 1;
-                if (score > alpha){
+                } else {
+                    score = alpha + 1;
+                }
+
+                if (score > alpha) {
                     score = -negamax(depth - 1, -alpha - 1, -alpha);
-                    if ((score > alpha) && (score < beta))
-                        score = -negamax(depth-1, -beta, -alpha);
+                    if (score > alpha && score < beta)
+                        score = -negamax(depth - 1, -beta, -alpha);
                 }
             }
-
+            undo_move(undo);
             ply--;
             repetition_index--;
-            take_back();
+
             moves_searched++;
-            
-            if (score > alpha){
+
+            if (score > alpha) {
                 hash_flag = hash_flag_exact;
-                
-                if (decode_move_capture(move) == 0){
+
+                if (!decode_move_capture(move)) {
                     history_moves[decode_move_piece(move)][decode_move_target(move)] += depth;
                 }
 
                 alpha = score;
 
                 pv_table[ply][ply] = move;
-
-                for (int i = ply+1; i < pv_length[ply + 1]; i++){
+                for (int i = ply + 1; i < pv_length[ply + 1]; i++)
                     pv_table[ply][i] = pv_table[ply + 1][i];
-                }
                 pv_length[ply] = pv_length[ply + 1];
-            
-                if (score >= beta){
+
+                if (score >= beta) {
                     write_tt_entry(beta, depth, hash_flag_beta);
-                    if (!decode_move_capture(move)){
+                    if (!decode_move_capture(move)) {
                         killer_moves[1][ply] = killer_moves[0][ply];
                         killer_moves[0][ply] = move;
                     }
                     return beta;
                 }
-
             }
         }
 
-        if (legal_moves_found == 0){
-            if (is_in_check){
-                return -MATE_VALUE+ ply;
-            }
-            else {
+        if (legal_moves_found == 0) {
+            if (is_in_check)
+                return -MATE_VALUE + ply;
+            else
                 return 0;
-            }
         }
 
         write_tt_entry(alpha, depth, hash_flag);
         return alpha;
-    }
-
-    void print_move(int move) {
-        if (decode_move_promotion(move))
-            printf("%s%s%c", square_names[decode_move_source(move)],square_names[decode_move_target(move)],get_promoted_piece_char(decode_move_promotion(move)));
-        else
-            printf("%s%s", square_names[decode_move_source(move)], square_names[decode_move_target(move)]);
     }
 };
