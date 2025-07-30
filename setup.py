@@ -4,14 +4,14 @@ import pybind11
 
 # Define the path to the C++ source files
 sources = [
-    'gym_chessengine/env.cpp',
+    'gym_chessengine/binding.cpp',
     'gym_chessengine/nnue/misc.cpp',
     'gym_chessengine/nnue/nnue.cpp',
 ]
 
 # Define the extension module
 env_extension = Extension(
-    'gym_chessengine.env',
+    'gym_chessengine.binding',
     sources=sources,
     include_dirs=['gym_chessengine', 'gym_chessengine/nnue', pybind11.get_include()],
     language='c++', # Specify C++ language

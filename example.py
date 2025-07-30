@@ -1,9 +1,9 @@
-from gym_chessengine.env_wrapper import BaseEnv
+import gym_chessengine
+import gymnasium as gym
+from gym_chessengine import string_to_move
 
-
-env = BaseEnv()
-env.render()
+env = gym.make("ChessEngine-v0", depth = 2, side = "black")
 env.reset()
-m = env.board.environment_move(2)
-print(env.move_to_string(m))
-# env.step(env.environment_move())
+env.render()
+env.step(string_to_move("d7d5"))
+env.render()

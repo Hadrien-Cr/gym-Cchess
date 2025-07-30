@@ -15,22 +15,36 @@ public:
         board.parse_fen(fen_char);
         delete[] fen_char;
     } 
+    
+    void init_engine() {
+        board.init_nnue("gym_chessengine/nn-eba324f53044.nnue");
+    }
 
-    std::tuple<py::array_t<double>, double, bool> step(int move) {
+    std::tuple<py::array_t<double>, double, bool> step(int a) {
         UndoInfo undo;
-        if (board.apply_move(move, 0, &undo) == 0) {
-            // Invalid move
-            return std::make_tuple(get_observation(), -1.0, true);
-        }
-
         move_list move_list[1];
         board.generate_moves(move_list);
-        if (move_list->move_count == 0) {
-            // Game over
-            return std::make_tuple(get_observation(), 0.0, true);
-        }
+        int move;
 
-        return std::make_tuple(get_observation(), 0.0, false);
+        for (int i = 0; i < move_list->move_count; i++) {
+            int64_t _move = move_list->moves[i];
+            if (decode_move_source(_move) * 64 + decode_move_target(_move) == a) {
+                move = _move;
+                break;
+            }
+        }
+        if (board.make_move(move) == 0) {
+            return std::make_tuple(get_observation(), -1.0, true);
+        }
+    }
+
+    std::string current_side(){
+        if (board.side_to_move == 0) {
+            return "white";
+        }
+        else {
+            return "black";
+        }
     }
 
     int environment_move(int depth) {
@@ -70,12 +84,14 @@ private:
     ChessBoard board;
 };
 
-PYBIND11_MODULE(env, m) {
+PYBIND11_MODULE(binding, m) {
     py::class_<PyChessBoard>(m, "PyChessBoard")
         .def(py::init<>())
         .def("reset", &PyChessBoard::reset)
+        .def("init_engine", &PyChessBoard::init_engine)
         .def("step", &PyChessBoard::step)
         .def("environment_move", &PyChessBoard::environment_move)
+        .def("current_side", &PyChessBoard::current_side)
         .def("get_observation", &PyChessBoard::get_observation)
         .def("print_board", &PyChessBoard::print_board);
 }
